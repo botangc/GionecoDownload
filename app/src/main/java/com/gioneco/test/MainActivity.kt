@@ -1,43 +1,40 @@
 package com.gioneco.test
 
 import android.annotation.SuppressLint
-import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
-import android.os.Environment
 import android.text.method.ScrollingMovementMethod
 import android.util.Log
 import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
-import java.io.File
+import androidx.appcompat.app.AppCompatActivity
 import com.gioneco.download.constant.Constant
 import com.gioneco.download.db.DBManager
 import com.gioneco.download.listener.DownloadListener
 import com.gioneco.download.utils.DownLoaderController
-import java.text.DecimalFormat
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
 
 class MainActivity : AppCompatActivity() {
     //文件下载地址
-//    private val downloadUrl =
-//        "http://gdown.baidu.com/data/wisegame/0d5a2f3c0e6b889c/qunaerlvxing_146.apk"
     private val downloadUrl =
-        "http://10.160.1.238:3000/files/com.tencent.tmgp.sgame_1.61.1.6_61010601.apk"
-    //本地保存文件名
-    private val filename =
-        Environment.getExternalStorageDirectory().absolutePath + File.separator + "update.apk"
+        "http://gdown.baidu.com/data/wisegame/0d5a2f3c0e6b889c/qunaerlvxing_146.apk"
+//    private val downloadUrl =
+//        "http://10.160.1.238:3000/files/com.tencent.tmgp.sgame_1.61.1.6_61010601.apk"
     //下载线程个数
     private val threadCount = 5
 
     private var lastTime: Long = 0L
-    private var mMax = 0
+    private var mMax = 1L
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        //本地保存文件名
+        val filename = File(getExternalFilesDir(null), "update.apk").absolutePath
         val btnPausedownload = findViewById<Button>(R.id.stop_download)
         val btnStartdownload = findViewById<Button>(R.id.start_download)
         val reStartdownload = findViewById<Button>(R.id.re_download)
@@ -63,20 +60,18 @@ class MainActivity : AppCompatActivity() {
                     /**
                      * 开始下载
                      */
-                    override fun onStart(max: Int) {
-                        Log.d(Constant.TAG, "开始下载：$max")
-                        mProgressBar.max = max
-                        mMax = max
+                    override fun onStart(size: Long) {
+                        Log.d(Constant.TAG, "开始下载：$size")
+                        mMax = size
                     }
 
                     /**
                      * 下载中
                      */
-                    override fun onUpdate(progress: Int) {
-                        mProgressBar.progress = progress
-                        val percent =
-                            DecimalFormat("0.000").format(((progress.toFloat() * 100 / mMax)))
-                        Log.i("下载", "$progress ,$mMax , ${percent}%")
+                    override fun onUpdate(progress: Long) {
+                        val percent = (progress.toFloat() * 100 / mMax).toInt()
+                        mProgressBar.progress = percent
+                        Log.i("下载", "$progress ,$mMax , $percent%")
                         mTvProgress.text = "${percent}%"
                     }
 
@@ -90,7 +85,6 @@ class MainActivity : AppCompatActivity() {
                                 System.currentTimeMillis(),
                                 lastTime
                             )
-
                     }
 
                     /**
@@ -105,11 +99,11 @@ class MainActivity : AppCompatActivity() {
         }
         //暂停下载
         btnPausedownload.setOnClickListener {
-            controller.stopDownload(downloadUrl)
+            controller.pauseDownload(downloadUrl)
         }
         //删除文件和数据库记录 重新下载
         reStartdownload.setOnClickListener {
-            DBManager.instance?.delete(downloadUrl)
+            DBManager.getInstance(this).delete(downloadUrl)
             File(filename).apply {
                 if (exists()) delete()
             }
@@ -124,7 +118,7 @@ class MainActivity : AppCompatActivity() {
             mProgressBar.progress = 0
             mMax = 0
             mTvProgress.text = "0%"
-            DBManager.instance?.delete(downloadUrl)
+            DBManager.getInstance(this).delete(downloadUrl)
             File(filename).apply {
                 if (exists()) delete()
             }
@@ -151,17 +145,5 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
         }
         return ""
-    }
-
-    /**
-     * 计算总文件已下载大小
-     */
-    private fun calculateCompleteSize(): Int {
-        var completeSize = 0
-        val infos = DBManager.getInstance(this).getInfos(downloadUrl)
-        for (info in infos) {
-            completeSize += info.completeSize
-        }
-        return completeSize
     }
 }

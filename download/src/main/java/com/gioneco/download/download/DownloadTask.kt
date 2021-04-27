@@ -5,112 +5,138 @@ import android.os.Handler
 import android.os.Looper
 import com.gioneco.download.bean.DownloadInfo
 import com.gioneco.download.constant.Constant
-import com.gioneco.download.constant.Constant.Companion.TAG
 import com.gioneco.download.db.DBManager
 import com.gioneco.download.listener.DownloadListener
-import com.gioneco.download.utils.logE
 import com.gioneco.download.utils.logI
-import java.io.RandomAccessFile
 import java.io.BufferedInputStream
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
 
-
 /**
+ * 实际分片的下载任务
+ *
  *Created by zsq
  *on 2021-01-08
  */
 class DownloadTask(
-    context: Context,
-    downLoadUrl: String,
-    fileSize: Int,
-    filename: String,
-    private var threadId: Int,
-    listener: DownloadListener
+    private val context: Context,
+    private val downLoadUrl: String,
+    private val fileSize: Long,
+    private val filePath: String,
+    private val threadId: Int,
+    private val listener: DownloadListener
 ) : Runnable {
-    private var mListener: DownloadListener = listener
-    private var mContext: Context = context
-    private var mDownLoadUrl: String = downLoadUrl
-    private var mRandomAccessFile: RandomAccessFile? = null
-    private var mFilename: String = filename
-    private var size: Int = fileSize
+    /**
+     * 切换至主线程，确保监听回调在主线程中
+     */
     private val mHandler = Handler(Looper.getMainLooper())
-    private var flag = false
-    //重试次数
+
+    /**
+     * 请求超时标志，请求超时需重试，非请求超时则直接报错
+     */
+    private var mTimeOutFlag = false
+
+    /**
+     * 已重试次数
+     */
     private var mRetryCount = 0
 
+    /**
+     * 最大重试次数
+     */
+    private val mMaxRetryCount = 10
+
+    /**
+     * 下载中
+     */
+    private val mTypeKeep = 1
+
+    /**
+     * 下载完成
+     */
+    private val mTypeCompleted = 2
+
+    /**
+     * 下载失败
+     */
+    private val mTypeFail = 3
+
     override fun run() {
-        FileDownloader.instance.putDownloadState(mDownLoadUrl, Constant.DOWNLOAD_STATE_START)
+        FileDownloader.putDownloadState(downLoadUrl, Constant.DOWNLOAD_STATE_START)
         var connection: HttpURLConnection? = null
         var inputStream: BufferedInputStream? = null
-        while (mRetryCount < 10) {
+        var mRandomAccessFile: RandomAccessFile? = null
+        while (mRetryCount < mMaxRetryCount) {
+            // 每次重试时重置超时标志，避免第一次超时后会重复下载
+            mTimeOutFlag = false
             var info: DownloadInfo? = null
-            if (DBManager.getInstance(mContext).isHasInfos(mDownLoadUrl)) {     //判断是否存在未完成的该任务
-                info = DBManager.getInstance(mContext).getInfo(mDownLoadUrl, threadId)
+            // 判断是否存在未完成的该任务
+            if (DBManager.getInstance(context).isExist(downLoadUrl)) {
+                info = DBManager.getInstance(context).getInfo(downLoadUrl, threadId)
             }
             "数据库中是否有数据 线程Id $threadId: $info".logI()
             try {
-                val url = URL(mDownLoadUrl)
-                var compeltesize = info?.completeSize ?: 0
-                //本地数据库中的保存的开始位置跟结束位置
-                val startPos = info?.startPos ?: 0
-                val endPos = info?.endPos ?: 0
+                val url = URL(downLoadUrl)
+                var completeSize = info?.completeSize ?: 0L
+                // 本地数据库中保存的分片开始位置跟结束位置
+                val startPos = info?.startPos ?: 0L
+                val endPos = info?.endPos ?: 0L
+                val realStartPos = startPos + completeSize
+                "线程id:$threadId 开始位置: $startPos, Range: bytes=$realStartPos-$endPos".logI()
                 connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 10000
                 connection.readTimeout = 10000
                 connection.setRequestProperty("Connection", "Keep-Alive")
-                "线程id:$threadId Range:  bytes=${startPos + compeltesize}-$endPos".logI()
-                connection.setRequestProperty("Range", "bytes=${startPos + compeltesize}-$endPos")
+                connection.setRequestProperty("Range", "bytes=$realStartPos-$endPos")
                 inputStream = BufferedInputStream(connection.inputStream)
-                mRandomAccessFile = RandomAccessFile(mFilename, "rw")
+                mRandomAccessFile = RandomAccessFile(filePath, "rw")
                 //上次的最后的写入位置
-                mRandomAccessFile?.seek((startPos + compeltesize).toLong())
-                " 线程id: $threadId 开始位置: $startPos ".logI()
+                mRandomAccessFile.seek(realStartPos)
                 val buffer = ByteArray(8 * 1024)
                 var length = 0
                 while ({ length = inputStream.read(buffer);length }() > 0) {
-                    if (FileDownloader.instance.getDownloadState(mDownLoadUrl) == Constant.DOWNLOAD_STATE_PAUSE) { //下载任务被暂停
+                    // 每次写入时，检测下载任务是否被停止
+                    if (FileDownloader.getDownloadState(downLoadUrl) != Constant.DOWNLOAD_STATE_START) {
                         return
                     }
                     "线程id:$threadId ------写入: $length".logI()
-                    mRandomAccessFile?.write(buffer, 0, length)
-                    compeltesize += length
-                    DBManager.getInstance(mContext)
-                        .updataInfos(threadId, compeltesize, mDownLoadUrl)  //保存数据库中的下载进度
-                    sendMessage(Constant.DOWNLOAD_KEEP, calculateCompleteSize(), null)     //更新进度条
+                    mRandomAccessFile.write(buffer, 0, length)
+                    completeSize += length
+                    // 保存数据库中的下载进度
+                    DBManager.getInstance(context).updateInfo(threadId, completeSize, downLoadUrl)
+                    // 更新进度条
+                    sendMessage(mTypeKeep, calculateCompleteSize(), null)
                 }
-                "线程id: " + threadId + "已完成: " + calculateCompleteSize() + " 总大小: " + size.logI()
-                if (calculateCompleteSize() >= size) {      //判断下载是否完成
-                    sendMessage(Constant.DOWNLOAD_COMPLETE, -1, mDownLoadUrl)
-                    //改变状态，可以继续下载
-                    FileDownloader.instance.putDownloadState(
-                        mDownLoadUrl,
-                        Constant.DOWNLOAD_STATE_PAUSE
-                    )
-                    //删除记录
-                    DBManager.instance?.delete(mDownLoadUrl)
+                "线程id: $threadId 已完成: ${calculateCompleteSize()} 总大小: $fileSize".logI()
+                // 判断下载是否完成
+                if (calculateCompleteSize() >= fileSize) {
+                    sendMessage(mTypeCompleted, -1L, downLoadUrl)
                     break
                 }
             } catch (e: Exception) {
-                if (e.message == "timeout")
-                    flag = true
-                if (!flag) {
-                    val errorMsg =
-                        "下载失败,线程id:$threadId 其他异常终止下载：" + e.message + " 重试次数:$mRetryCount"
-                    errorMsg.logE()
-                    stopDownload(errorMsg)
-                } else if (mRetryCount == 9) { //当下载了10都次失败 就终止下载
-                    val errorMsg =
-                        "下载失败,线程id:$threadId 重试次数过多终止下载：" + e.message + " 重试次数:$mRetryCount"
-                    stopDownload(errorMsg)
-                    errorMsg.logE()
+                if (e.message == "timeout") {
+                    mTimeOutFlag = true
                 }
-                //如果是重试，将次数暴露给UI
-                if (Constant.DEBUG&&flag) {
+                if (!mTimeOutFlag) {
+                    sendMessage(
+                        mTypeFail,
+                        -1L,
+                        "下载失败, 线程id:$threadId msg：${e.message} 重试次数:$mRetryCount"
+                    )
+                } else if (mRetryCount == mMaxRetryCount - 1) { //当下载了10都次失败 就终止下载
+                    sendMessage(
+                        mTypeFail,
+                        -1L,
+                        "下载失败, 线程id:$threadId 重试超限${e.message} 重试次数:$mRetryCount"
+                    )
+                }
+                // 如果是重试，将次数暴露给UI
+                if (Constant.DEBUG && mTimeOutFlag) {
                     mHandler.post {
-                        mListener.onFail("线程id:${threadId}   重试次数：${mRetryCount + 1}")
+                        listener.onFail("线程id:${threadId}   重试次数：${mRetryCount + 1}")
                     }
                 }
             } finally {
@@ -121,36 +147,33 @@ class DownloadTask(
                 } catch (e: IOException) {
                     e.printStackTrace()
                 }
-
             }
-            if (flag) {
+            if (mTimeOutFlag) {
                 mRetryCount++
             } else break
         }
-
     }
 
-    private fun stopDownload(errorMsg: String) {
-        FileDownloader.instance.putDownloadState(
-            mDownLoadUrl,
-            Constant.DOWNLOAD_STATE_PAUSE
-        )
-        sendMessage(Constant.DOWNLOAD_FAIL, -1, errorMsg)
-    }
-
-    private fun sendMessage(what: Int, arg1: Int, obj: Any?) {
+    /**
+     * 发送当前下载状态相关信息
+     *
+     * @param what 消息类型，[mTypeKeep]下载中，[mTypeCompleted]下载完成，[mTypeFail]下载失败
+     * @param size 已下载大小，非进度相关时为-1
+     * @param obj 附带信息，[mTypeKeep]=null，[mTypeCompleted]=downloadUrl，[mTypeFail]=errorMsg
+     */
+    private fun sendMessage(what: Int, size: Long, obj: Any?) {
         mHandler.post {
             when (what) {
-                Constant.DOWNLOAD_KEEP -> {
-                    mListener.onUpdate(arg1)
+                mTypeKeep -> listener.onUpdate(size)
+                mTypeCompleted -> {
+                    FileDownloader.putDownloadState(downLoadUrl, Constant.DOWNLOAD_STATE_FINISH)
+                    DBManager.getInstance(context).delete(downLoadUrl)
+                    listener.onComplete(obj as String)
                 }
-                Constant.DOWNLOAD_COMPLETE -> {
-                    mListener.onComplete(obj as String)
-                }
-                Constant.DOWNLOAD_FAIL -> {
-                    //删除记录
-                    DBManager.instance?.delete(mDownLoadUrl)
-                    mListener.onFail(obj as String)
+                mTypeFail -> {
+                    FileDownloader.putDownloadState(downLoadUrl, Constant.DOWNLOAD_STATE_PAUSE)
+                    DBManager.getInstance(context).delete(downLoadUrl)
+                    listener.onFail(obj as String)
                 }
             }
         }
@@ -159,13 +182,13 @@ class DownloadTask(
     /**
      * 计算总文件已下载大小
      */
-    private fun calculateCompleteSize(): Int {
-        var completeSize = 0
-        val infos = DBManager.getInstance(mContext).getInfos(mDownLoadUrl)
-        for (info in infos) {
+    private fun calculateCompleteSize(): Long {
+        var completeSize = 0L
+        val infoList = DBManager.getInstance(context).getInfoList(downLoadUrl)
+        for (info in infoList) {
+            // 累计各分片下载大小
             completeSize += info.completeSize
         }
         return completeSize
     }
-
 }
