@@ -24,8 +24,9 @@ interface DownloadListener {
      * 下载完成
      *
      * @param url 下载地址
+     * @param path 文件地址
      */
-    fun onComplete(url: String)
+    fun onComplete(url: String, path: String)
 
     /**
      * 下载失败

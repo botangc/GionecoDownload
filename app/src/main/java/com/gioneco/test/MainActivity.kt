@@ -20,8 +20,8 @@ import java.util.*
 class MainActivity : AppCompatActivity() {
     //文件下载地址
     private val downloadUrl =
-        "http://gdown.baidu.com/data/wisegame/0d5a2f3c0e6b889c/qunaerlvxing_146.apk"
-//    private val downloadUrl =
+        "http://10.170.1.36:39001/monitor/manager/device/log-download/206"
+//        "http://gdown.baidu.com/data/wisegame/0d5a2f3c0e6b889c/qunaerlvxing_146.apk"
 //        "http://10.160.1.238:3000/files/com.tencent.tmgp.sgame_1.61.1.6_61010601.apk"
     //下载线程个数
     private val threadCount = 5
@@ -34,7 +34,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         //本地保存文件名
-        val filename = File(getExternalFilesDir(null), "update.apk").absolutePath
+        val filename = File(getExternalFilesDir(null), "update.zip").absolutePath
         val btnPausedownload = findViewById<Button>(R.id.stop_download)
         val btnStartdownload = findViewById<Button>(R.id.start_download)
         val reStartdownload = findViewById<Button>(R.id.re_download)
@@ -71,14 +71,13 @@ class MainActivity : AppCompatActivity() {
                     override fun onUpdate(progress: Long) {
                         val percent = (progress.toFloat() * 100 / mMax).toInt()
                         mProgressBar.progress = percent
-                        Log.i("下载", "$progress ,$mMax , $percent%")
                         mTvProgress.text = "${percent}%"
                     }
 
                     /**
                      * 下载完成
                      */
-                    override fun onComplete(url: String) {
+                    override fun onComplete(url: String, path: String) {
                         Log.d(Constant.TAG, "下载完成：$url")
                         tv_status.text =
                             "下载完成：$url     耗时：" + calculateTime(

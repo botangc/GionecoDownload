@@ -7,6 +7,7 @@ import com.gioneco.download.bean.DownloadInfo
 import com.gioneco.download.constant.Constant
 import com.gioneco.download.db.DBManager
 import com.gioneco.download.listener.DownloadListener
+import com.gioneco.download.utils.logE
 import com.gioneco.download.utils.logI
 import java.io.BufferedInputStream
 import java.io.IOException
@@ -76,7 +77,6 @@ class DownloadTask(
             if (DBManager.getInstance(context).isExist(downLoadUrl)) {
                 info = DBManager.getInstance(context).getInfo(downLoadUrl, threadId)
             }
-            "数据库中是否有数据 线程Id $threadId: $info".logI()
             try {
                 val url = URL(downLoadUrl)
                 var completeSize = info?.completeSize ?: 0L
@@ -84,13 +84,13 @@ class DownloadTask(
                 val startPos = info?.startPos ?: 0L
                 val endPos = info?.endPos ?: 0L
                 val realStartPos = startPos + completeSize
-                "线程id:$threadId 开始位置: $startPos, Range: bytes=$realStartPos-$endPos".logI()
                 connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 10000
                 connection.readTimeout = 10000
                 connection.setRequestProperty("Connection", "Keep-Alive")
                 connection.setRequestProperty("Range", "bytes=$realStartPos-$endPos")
+                "线程id:$threadId, 开始位置: $startPos, Range: bytes=$realStartPos-$endPos, value=${connection.headerFields["Content-Length"]}".logE()
                 inputStream = BufferedInputStream(connection.inputStream)
                 mRandomAccessFile = RandomAccessFile(filePath, "rw")
                 //上次的最后的写入位置
@@ -102,21 +102,22 @@ class DownloadTask(
                     if (FileDownloader.getDownloadState(downLoadUrl) != Constant.DOWNLOAD_STATE_START) {
                         return
                     }
-                    "线程id:$threadId ------写入: $length".logI()
+                    "线程id:$threadId ------写入: $length，had=$completeSize/$endPos".logI()
                     mRandomAccessFile.write(buffer, 0, length)
                     completeSize += length
                     // 保存数据库中的下载进度
                     DBManager.getInstance(context).updateInfo(threadId, completeSize, downLoadUrl)
                     // 更新进度条
-                    sendMessage(mTypeKeep, calculateCompleteSize(), null)
+                    sendMessage(mTypeKeep, calculateCompleteSize(), "")
                 }
                 "线程id: $threadId 已完成: ${calculateCompleteSize()} 总大小: $fileSize".logI()
                 // 判断下载是否完成
                 if (calculateCompleteSize() >= fileSize) {
-                    sendMessage(mTypeCompleted, -1L, downLoadUrl)
+                    sendMessage(mTypeCompleted, -1L, "")
                     break
                 }
             } catch (e: Exception) {
+                e.printStackTrace()
                 if (e.message == "timeout") {
                     mTimeOutFlag = true
                 }
@@ -159,21 +160,20 @@ class DownloadTask(
      *
      * @param what 消息类型，[mTypeKeep]下载中，[mTypeCompleted]下载完成，[mTypeFail]下载失败
      * @param size 已下载大小，非进度相关时为-1
-     * @param obj 附带信息，[mTypeKeep]=null，[mTypeCompleted]=downloadUrl，[mTypeFail]=errorMsg
+     * @param errorMsg 错误信息
      */
-    private fun sendMessage(what: Int, size: Long, obj: Any?) {
+    private fun sendMessage(what: Int, size: Long, errorMsg: String) {
         mHandler.post {
             when (what) {
                 mTypeKeep -> listener.onUpdate(size)
                 mTypeCompleted -> {
                     FileDownloader.putDownloadState(downLoadUrl, Constant.DOWNLOAD_STATE_FINISH)
                     DBManager.getInstance(context).delete(downLoadUrl)
-                    listener.onComplete(obj as String)
+                    listener.onComplete(downLoadUrl, filePath)
                 }
                 mTypeFail -> {
                     FileDownloader.putDownloadState(downLoadUrl, Constant.DOWNLOAD_STATE_PAUSE)
-                    DBManager.getInstance(context).delete(downLoadUrl)
-                    listener.onFail(obj as String)
+                    listener.onFail(errorMsg)
                 }
             }
         }

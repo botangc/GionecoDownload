@@ -87,6 +87,9 @@ object FileDownloader {
      * 初始化数据，将分片下载任务信息存入数据库
      */
     private fun initData() {
+        if (fileSize == -1L) {
+            return
+        }
         var accessFile: RandomAccessFile? = null
         try {
             val file = File(filePath)
@@ -99,7 +102,13 @@ object FileDownloader {
                 val block = fileSize / threadCount + if (fileSize % threadCount == 0L) 0L else 1L
                 // 将分片下载信息存入数据库
                 for (i in 0 until threadCount) {
-                    val info = DownloadInfo(i, i * block, (i + 1) * block, 0L, downloadUrl)
+                    val info = DownloadInfo(
+                        i,
+                        i * block,
+                        if (i == threadCount - 1) fileSize - 1 else (i + 1) * block,
+                        0L,
+                        downloadUrl
+                    )
                     DBManager.getInstance(context).saveInfo(info)
                 }
             }
@@ -124,7 +133,8 @@ object FileDownloader {
      *
      * @param downloadUrl 下载地址
      */
-    fun getDownloadState(downloadUrl: String) = downloadStateMap[downloadUrl] ?: Constant.DOWNLOAD_STATE_INIT
+    fun getDownloadState(downloadUrl: String) =
+        downloadStateMap[downloadUrl] ?: Constant.DOWNLOAD_STATE_INIT
 
     /**
      * 存储下载地址对应的下载状态
@@ -162,8 +172,10 @@ object FileDownloader {
             return
         }
         // 开启下载任务前，必须调用init
-        if (::downloadUrl.isInitialized.not()) {
-            mHandler.post { listener.onFail("please call init first") }
+        if (::downloadUrl.isInitialized.not() || fileSize == -1L) {
+            mHandler.post {
+                listener.onFail(if (fileSize == -1L) "file size is -1" else "please call init first")
+            }
             return
         }
         // 回调任务开始
