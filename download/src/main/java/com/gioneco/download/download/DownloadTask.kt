@@ -167,7 +167,7 @@ class DownloadTask(
             when (what) {
                 mTypeKeep -> listener.onUpdate(size)
                 mTypeCompleted -> {
-                    FileDownloader.putDownloadState(downLoadUrl, Constant.DOWNLOAD_STATE_FINISH)
+                    FileDownloader.removeDownloadState(downLoadUrl)
                     DBManager.getInstance(context).delete(downLoadUrl)
                     listener.onComplete(downLoadUrl, filePath)
                 }
